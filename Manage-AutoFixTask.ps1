@@ -3,7 +3,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet("Install", "Uninstall", "Status")]
-    [string]$Action = "Install"
+    [string]$Action = "Install",
+
+    [string]$ResultPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +13,25 @@ $ErrorActionPreference = "Stop"
 $TaskName = "Roblox CDN AutoFix"
 $MonitorScriptPath = Join-Path $PSScriptRoot "Roblox-CDN-Monitor.ps1"
 $MonitorLauncherPath = Join-Path $PSScriptRoot "run-monitor.cmd"
+
+function Write-OperationResult {
+    param(
+        [string]$Message,
+        [string]$Color = "White"
+    )
+
+    Write-Host $Message -ForegroundColor $Color
+
+    if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
+        [System.IO.File]::WriteAllText($ResultPath, $Message, (New-Object System.Text.UTF8Encoding($true)))
+    }
+}
+
+trap {
+    $errorMessage = "Ошибка: {0}" -f $_.Exception.Message
+    Write-OperationResult -Message $errorMessage -Color "Red"
+    exit 1
+}
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -23,7 +44,8 @@ function Restart-AsAdministrator {
         return
     }
 
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Action {1}' -f $PSCommandPath, $Action
+    $elevationResultPath = Join-Path ([System.IO.Path]::GetTempPath()) ("RobloxCDNAutoFix_{0}.txt" -f [Guid]::NewGuid().ToString("N"))
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Action {1} -ResultPath "{2}"' -f $PSCommandPath, $Action, $elevationResultPath
 
     try {
         $process = Start-Process `
@@ -32,6 +54,14 @@ function Restart-AsAdministrator {
             -ArgumentList $arguments `
             -Wait `
             -PassThru
+
+        if (Test-Path -LiteralPath $elevationResultPath) {
+            Get-Content -LiteralPath $elevationResultPath
+            Remove-Item -LiteralPath $elevationResultPath -Force
+        }
+        elseif ($process.ExitCode -ne 0) {
+            Write-Host ("Операция завершилась с кодом {0}, но подробности получить не удалось." -f $process.ExitCode) -ForegroundColor Red
+        }
 
         exit $process.ExitCode
     }
@@ -46,11 +76,11 @@ if ($Action -eq "Status") {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
     if ($null -eq $task) {
-        Write-Host "Автоматическая проверка не установлена."
+        Write-OperationResult -Message "Автоматическая проверка не установлена."
         exit 1
     }
 
-    Write-Host ("Задача установлена. Состояние: {0}" -f $task.State) -ForegroundColor Green
+    Write-OperationResult -Message ("Задача установлена. Состояние: {0}" -f $task.State) -Color "Green"
     exit 0
 }
 
@@ -60,12 +90,12 @@ if ($Action -eq "Uninstall") {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
     if ($null -eq $task) {
-        Write-Host "Автоматическая проверка уже удалена."
+        Write-OperationResult -Message "Автоматическая проверка уже удалена." -Color "Green"
         exit 0
     }
 
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    Write-Host "Автоматическая проверка удалена." -ForegroundColor Green
+    Write-OperationResult -Message "Автоматическая проверка удалена." -Color "Green"
     exit 0
 }
 
@@ -77,7 +107,7 @@ if (-not (Test-Path -LiteralPath $MonitorLauncherPath)) {
     throw "Не найден файл запуска монитора: $MonitorLauncherPath"
 }
 
-$taskArguments = '/d /c ""{0}""' -f $MonitorLauncherPath
+$taskArguments = '/d /c ""{0}" --scheduled"' -f $MonitorLauncherPath
 $taskAction = New-ScheduledTaskAction `
     -Execute (Join-Path $env:SystemRoot "System32\cmd.exe") `
     -Argument $taskArguments `
@@ -106,6 +136,4 @@ Register-ScheduledTask `
     -RunLevel Highest `
     -Force | Out-Null
 
-Write-Host "Автоматическая проверка установлена." -ForegroundColor Green
-Write-Host "Roblox не запущен: монитор не обращается к сети."
-Write-Host "Roblox запущен: CDN проверяется раз в пять минут."
+Write-OperationResult -Message "Автоматическая проверка установлена. Roblox закрыт — сетевых запросов нет; Roblox запущен — CDN проверяется раз в пять минут." -Color "Green"

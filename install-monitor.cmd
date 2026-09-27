@@ -1,12 +1,23 @@
 @echo off
-chcp 65001 >nul
 setlocal
 set "SCRIPT=%~dp0Manage-AutoFixTask.ps1"
 if not exist "%SCRIPT%" (
-  echo Файл Manage-AutoFixTask.ps1 не найден рядом с установщиком.
+  echo Manage-AutoFixTask.ps1 was not found next to this launcher.
   pause
   exit /b 1
 )
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -Action Install
+set "RESULT=%errorlevel%"
+
+echo.
+if not "%RESULT%"=="0" goto install_failed
+
+echo Installation completed successfully.
+goto install_done
+
+:install_failed
+echo Installation failed with exit code %RESULT%.
+
+:install_done
 pause
-endlocal
+endlocal & exit /b %RESULT%
