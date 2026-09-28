@@ -65,9 +65,10 @@ try {
         $CooldownMinutes = $settings.CooldownMinutes
         $script:AutoRepair = $settings.AutoRepair
         Import-Module (Join-Path $PSHOME 'Modules\CimCmdlets\CimCmdlets.psd1')
+        $query = New-RobloxProcessStartQuery $settings.ProcessNames
         $source = 'RobloxCDNAutoFix.ProcessStart'
-        Register-CimIndicationEvent -Namespace root/cimv2 -Query "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'RobloxPlayerBeta.exe'" -SourceIdentifier $source | Out-Null
-        Write-RotatingLog 'RobloxCDNMonitor.log' 'Наблюдатель готов. Ожидание запуска Roblox.'
+        Register-CimIndicationEvent -Namespace root/cimv2 -Query $query -SourceIdentifier $source | Out-Null
+        Write-RotatingLog 'RobloxCDNMonitor.log' ('Наблюдатель готов. Ожидание запуска: ' + ($settings.ProcessNames -join ', '))
         try {
             while ($true) {
                 $event = Wait-Event -SourceIdentifier $source

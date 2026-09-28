@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
 $env:PATH = [Environment]::SystemDirectory

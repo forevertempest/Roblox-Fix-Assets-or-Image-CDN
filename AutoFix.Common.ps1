@@ -142,6 +142,20 @@ function Read-MonitorSettings {
     return $result
 }
 
+function New-RobloxProcessStartQuery {
+    param([string[]]$ProcessNames)
+    $names = @($ProcessNames | ForEach-Object { [string]$_ })
+    if ($names.Count -lt 1 -or $names.Count -gt 8 -or
+        ($names -join ',') -notmatch '^[A-Za-z0-9_.-]{1,80}(,[A-Za-z0-9_.-]{1,80}){0,7}$') {
+        throw 'Некорректный список процессов для мониторинга.'
+    }
+    $predicates = foreach ($name in $names) {
+        $executableName = $name -replace '(?i)\.exe$', ''
+        "ProcessName = '${executableName}.exe'"
+    }
+    return 'SELECT * FROM Win32_ProcessStartTrace WHERE ' + ($predicates -join ' OR ')
+}
+
 function Enter-AutoFixLock {
     param([ValidateSet('operation.lock', 'installation.lock')][string]$Name = 'operation.lock')
     Assert-ProtectedPath $script:DataRoot

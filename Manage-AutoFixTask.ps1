@@ -6,11 +6,13 @@ param(
     [switch]$Elevated,
     [ValidateRange(1, 1440)]
     [int]$CooldownMinutes = 30,
-    [bool]$AutoRepair = $true,
+    [ValidateSet('True', 'False')]
+    [string]$AutoRepair = 'True',
     [string]$ProcessNames = 'RobloxPlayerBeta',
     [switch]$ProtectedSource
 )
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
 $env:PATH = [Environment]::SystemDirectory
 Set-Location -LiteralPath ([Environment]::SystemDirectory)
@@ -48,6 +50,7 @@ if (-not (Test-IsAdministrator)) {
     }
     catch { Write-Host $_.Exception.Message; exit 1 }
 }
+$autoRepairEnabled = [bool]::Parse($AutoRepair)
 Import-Module (Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1') -ErrorAction Stop
 
 function Get-AutoFixTask {
@@ -81,7 +84,12 @@ try {
     $installationLock = Enter-AutoFixLock -Name 'installation.lock'
     if ($Action -eq 'Status') {
         $task = Get-AutoFixTask
-        if ($null -eq $task) { throw 'Автоматическая проверка не установлена.' }
+        if ($null -eq $task) {
+            Write-Host 'Автоматическая проверка не установлена. Для установки выбери пункт 2 в главном меню.'
+            exit 0
+        }
+        Write-Host ("Состояние автопроверки: " + $task.State)
+        Write-Host 'CDN проверяется при запуске Roblox. Периодических сетевых проверок нет.'
         Write-Host ($task.Actions | Format-List Execute, Arguments, WorkingDirectory | Out-String)
         Write-RotatingLog 'Installer.log' ("Состояние задачи: " + $task.State)
         exit 0
@@ -105,7 +113,7 @@ try {
     Stop-AutoFixTask
     $operationLock = Enter-AutoFixLock
     if ($Action -eq 'Install') {
-        Write-MonitorSettings -CooldownMinutes $CooldownMinutes -AutoRepair $AutoRepair -ProcessNames $ProcessNames
+        Write-MonitorSettings -CooldownMinutes $CooldownMinutes -AutoRepair $autoRepairEnabled -ProcessNames $ProcessNames
     }
     if ($Action -in @('Uninstall', 'Reset')) {
         if ($Action -eq 'Reset') {
@@ -127,6 +135,9 @@ try {
         }
         Remove-ProtectedTree $script:InstallRoot
         Write-RotatingLog 'Installer.log' ("$Action завершён. Защищённая копия удалена; резервные копии сохранены в " + $script:DataRoot)
+        if ($Action -eq 'Reset') { Write-Host 'Изменения AutoFix в hosts сброшены. Автопроверка удалена.' }
+        else { Write-Host 'Автопроверка удалена. Записи hosts не изменены.' }
+        Write-Host ("Резервные копии и журналы сохранены: " + $script:DataRoot)
         exit 0
     }
     Assert-ProtectedPath ([IO.Path]::GetDirectoryName($script:InstallRoot))
@@ -176,6 +187,9 @@ try {
         }
     }
     Write-RotatingLog 'Installer.log' 'Установка завершена. Перезапусти Roblox для проверки CDN. Исходная папка больше не используется задачей.'
+    Write-Host 'Автопроверка установлена. Перезапусти Roblox для проверки CDN.'
+    Write-Host ("Автоисправление: {0}; пауза между исправлениями: {1} мин." -f $autoRepairEnabled, $CooldownMinutes)
+    Write-Host ("Отслеживаемые процессы: " + $ProcessNames)
 }
 catch {
     $failure = $_.Exception.Message
