@@ -11,7 +11,7 @@
 
 **Запуск Roblox → проверка CDN → подбор IP → безопасное обновление hosts**
 
-[Русский](#russian) · [English](#english) · [Скачать / Download](https://github.com/forevertempest/Roblox-Fix-CDN/releases) · [Security](SECURITY.md)
+[Русский](#russian) · [English](#english) · [Скачать / Download](https://github.com/forevertempest/Roblox-Fix-Assets-or-Image-CDN/releases) · [Security](SECURITY.md)
 
 Разработчик / Developer: **Tempest** · Discord: **foreverfame** · [Telegram: tempestdevelop](https://t.me/tempestdevelop)
 
@@ -36,7 +36,7 @@ AutoFix помогает, когда `tr.rbxcdn.com` недоступен чер
 
 ## Быстрый старт
 
-1. Скачай **[windows-x64.exe](https://github.com/forevertempest/Roblox-Fix-CDN/releases/latest/download/windows-x64.exe)**.
+1. Скачай **[windows-x64.exe](https://github.com/forevertempest/Roblox-Fix-Assets-or-Image-CDN/releases/download/Roblox-Fix/windows-x64.exe)**.
 2. Запусти и выбери **1 — Проверить и исправить CDN**.
 3. Подтверди UAC и дождись результата в основном окне.
 4. Если hosts изменился, полностью перезапусти Roblox.
@@ -48,7 +48,7 @@ AutoFix помогает, когда `tr.rbxcdn.com` недоступен чер
 
 Требования: **Windows 10/11 x64**, встроенные **Windows PowerShell 5.1** и **curl.exe**, интернет для диагностики и права администратора для системных операций. Справка и пользовательские настройки работают без сети и UAC.
 
-EXE не подписан сертификатом разработчика, поэтому SmartScreen может показать предупреждение. Сравни хеш с [SHA256SUMS.txt](https://github.com/forevertempest/Roblox-Fix-CDN/releases/latest/download/SHA256SUMS.txt):
+EXE не подписан сертификатом разработчика, поэтому SmartScreen может показать предупреждение. Сравни хеш с [SHA256SUMS.txt](https://github.com/forevertempest/Roblox-Fix-Assets-or-Image-CDN/releases/latest/download/SHA256SUMS.txt):
 
 ```powershell
 Get-FileHash .\windows-x64.exe -Algorithm SHA256
@@ -374,7 +374,7 @@ Only **Windows x64** is supported. The interface and built-in help are currently
 
 ## Quick start
 
-1. Download **[windows-x64.exe](https://github.com/forevertempest/Roblox-Fix-CDN/releases/latest/download/windows-x64.exe)**.
+1. Download **[windows-x64.exe](https://github.com/forevertempest/Roblox-Fix-Assets-or-Image-CDN/releases/latest/download/windows-x64.exe)**.
 2. Open it and select **1 — Check and repair CDN**.
 3. Approve UAC and read the result in the same window.
 4. Fully restart Roblox if hosts changed.
@@ -386,7 +386,7 @@ The release is one self-contained EXE: no adjacent scripts, DLLs, or separate .N
 
 Requirements: **Windows 10/11 x64**, built-in **Windows PowerShell 5.1** and **curl.exe**, internet for diagnostics, and administrator privileges for system operations. Help and user preferences need neither internet nor elevation.
 
-The EXE is not code-signed; SmartScreen may display a warning. Compare its hash with [SHA256SUMS.txt](https://github.com/forevertempest/Roblox-Fix-CDN/releases/latest/download/SHA256SUMS.txt):
+The EXE is not code-signed; SmartScreen may display a warning. Compare its hash with [SHA256SUMS.txt](https://github.com/forevertempest/Roblox-Fix-Assets-or-Image-CDN/releases/latest/download/SHA256SUMS.txt):
 
 ```powershell
 Get-FileHash .\windows-x64.exe -Algorithm SHA256
