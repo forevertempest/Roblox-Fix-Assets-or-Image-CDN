@@ -13,6 +13,7 @@ $HostsPath = Join-Path $env:SystemRoot "System32\drivers\etc\hosts"
 $WorkDir = Join-Path $env:ProgramData "RobloxCDNAutoFix"
 $BackupDir = Join-Path $WorkDir "backups"
 $LogPath = Join-Path $WorkDir "RobloxCDNAutoFix.log"
+$OriginalMappingPath = Join-Path $WorkDir "original-domain-mappings.txt"
 
 # Эти адреса используем только как запасной вариант.
 # Перед записью в hosts каждый адрес обязательно проверяется по HTTPS.
@@ -320,6 +321,59 @@ function Backup-HostsFile {
     return $backupPath
 }
 
+function Get-DomainMappingLines {
+    param([string[]]$Lines)
+
+    $result = @()
+
+    foreach ($line in $Lines) {
+        if ($line -notmatch "^\s*(?<IP>\d{1,3}(?:\.\d{1,3}){3})\s+(?<Hosts>[^#]+)") {
+            continue
+        }
+
+        $ip = $Matches.IP
+        $hosts = @($Matches.Hosts.Trim() -split "\s+")
+
+        if (($hosts -contains $Domain) -and ($result -notcontains ("{0}`t{1}" -f $ip, $Domain))) {
+            $result += ("{0}`t{1}" -f $ip, $Domain)
+        }
+    }
+
+    return $result
+}
+
+function Save-OriginalDomainMappings {
+    param([string[]]$CurrentLines)
+
+    if (Test-Path -LiteralPath $OriginalMappingPath) {
+        return
+    }
+
+    $sourceLines = $CurrentLines
+    $hasManagedEntry = $null -ne ($CurrentLines | Where-Object { $_ -match "^\s*#\s*RobloxCDNAutoFix\b" } | Select-Object -First 1)
+
+    if ($hasManagedEntry) {
+        $cleanBackup = Get-ChildItem -LiteralPath $BackupDir -Filter "hosts_*.bak" -File -ErrorAction SilentlyContinue |
+            Sort-Object Name |
+            Where-Object {
+                $backupLines = [System.IO.File]::ReadAllLines($_.FullName)
+                $null -eq ($backupLines | Where-Object { $_ -match "^\s*#\s*RobloxCDNAutoFix\b" } | Select-Object -First 1)
+            } |
+            Select-Object -First 1
+
+        if ($null -ne $cleanBackup) {
+            $sourceLines = [System.IO.File]::ReadAllLines($cleanBackup.FullName)
+        }
+        else {
+            $sourceLines = @()
+        }
+    }
+
+    $originalMappings = @(Get-DomainMappingLines -Lines $sourceLines)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($OriginalMappingPath, $originalMappings, $utf8NoBom)
+}
+
 function Restore-HostsFile {
     param([string]$BackupPath)
 
@@ -381,6 +435,7 @@ function Set-HostsMapping {
 
     try {
         $lines = [System.IO.File]::ReadAllLines($HostsPath)
+        Save-OriginalDomainMappings -CurrentLines $lines
         $lines = Remove-ManagedDomainLines -Lines $lines
 
         $newLines = @()

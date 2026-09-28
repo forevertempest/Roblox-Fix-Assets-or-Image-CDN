@@ -52,8 +52,22 @@ Roblox CDN AutoFix самостоятельно:
 
 Для удаления автоматической проверки запусти **`uninstall-monitor.cmd`**.
 
+`run-monitor.cmd` используется Планировщиком. При ручном запуске он показывает текущий статус; для постоянной фоновой проверки всё равно нужно установить задачу через `install-monitor.cmd`.
+
 > [!TIP]
 > После перемещения папки проекта запусти `install-monitor.cmd` повторно — задача обновит путь к файлам.
+
+### Полный сброс
+
+Запусти **`reset-autofix.cmd`**, если нужно полностью отменить работу проекта. После подтверждения скрипт:
+
+- удалит задачу из Планировщика;
+- уберёт добавленную AutoFix запись из `hosts`;
+- восстановит исходную запись `tr.rbxcdn.com`, если она существовала до первого исправления;
+- сохранит любые посторонние изменения в `hosts`;
+- очистит DNS-кэш, логи, состояние и резервные копии AutoFix.
+
+Папка с файлами самого проекта не удаляется.
 
 ## Как работает монитор
 
@@ -121,10 +135,11 @@ flowchart LR
 | `Roblox-CDN-AutoFix.ps1` | Основная диагностика, подбор IP, изменение и проверка `hosts` |
 | `Roblox-CDN-Monitor.ps1` | Проверка CDN во время работы Roblox и запуск исправления |
 | `Manage-AutoFixTask.ps1` | Установка, удаление и проверка задачи Планировщика |
-| `run-monitor.cmd` | Лёгкая проверка процесса до запуска PowerShell |
+| `run-monitor.cmd` | Лёгкая проверка процесса через `tasklist` до запуска PowerShell |
 | `run-fix.cmd` | Ручной запуск исправления |
 | `install-monitor.cmd` | Установка автоматического режима |
 | `uninstall-monitor.cmd` | Удаление автоматического режима |
+| `reset-autofix.cmd` | Полный откат системных изменений и удаление служебных данных |
 
 ## Логи и резервные копии
 
@@ -243,8 +258,22 @@ Run **`install-monitor.cmd`** and approve the User Account Control prompt. A tas
 
 To remove automatic monitoring, run **`uninstall-monitor.cmd`**.
 
+`run-monitor.cmd` is used by Task Scheduler. When started manually, it displays the current status; continuous background monitoring still requires installing the task through `install-monitor.cmd`.
+
 > [!TIP]
 > If you move the project folder, run `install-monitor.cmd` again so the scheduled task receives the new path.
+
+### Full reset
+
+Run **`reset-autofix.cmd`** to completely undo the project's system changes. After confirmation, the script will:
+
+- remove the scheduled task;
+- remove the AutoFix mapping from `hosts`;
+- restore the original `tr.rbxcdn.com` mapping if one existed before the first repair;
+- preserve unrelated changes made to `hosts`;
+- flush the DNS cache and delete AutoFix logs, state, and backups.
+
+The project folder itself is not deleted.
 
 ## How the monitor works
 
@@ -312,10 +341,11 @@ No additional modules or third-party applications are required.
 | `Roblox-CDN-AutoFix.ps1` | Main diagnostics, IP selection, `hosts` modification, and verification |
 | `Roblox-CDN-Monitor.ps1` | CDN monitoring while Roblox is running and automatic repair startup |
 | `Manage-AutoFixTask.ps1` | Scheduled-task installation, removal, and status checks |
-| `run-monitor.cmd` | Lightweight process check before PowerShell starts |
+| `run-monitor.cmd` | Lightweight `tasklist` process check before PowerShell starts |
 | `run-fix.cmd` | Manual repair launcher |
 | `install-monitor.cmd` | Automatic-mode installer |
 | `uninstall-monitor.cmd` | Automatic-mode uninstaller |
+| `reset-autofix.cmd` | Full system-change rollback and runtime-data cleanup |
 
 ## Logs and backups
 

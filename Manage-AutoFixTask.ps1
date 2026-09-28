@@ -1,8 +1,8 @@
-﻿# Устанавливает и удаляет фоновую проверку через Планировщик заданий Windows.
+﻿# Управляет фоновой проверкой и полным сбросом изменений AutoFix.
 
 [CmdletBinding()]
 param(
-    [ValidateSet("Install", "Uninstall", "Status")]
+    [ValidateSet("Install", "Uninstall", "Reset", "Status")]
     [string]$Action = "Install",
 
     [string]$ResultPath
@@ -13,6 +13,11 @@ $ErrorActionPreference = "Stop"
 $TaskName = "Roblox CDN AutoFix"
 $MonitorScriptPath = Join-Path $PSScriptRoot "Roblox-CDN-Monitor.ps1"
 $MonitorLauncherPath = Join-Path $PSScriptRoot "run-monitor.cmd"
+$Domain = "tr.rbxcdn.com"
+$HostsPath = Join-Path $env:SystemRoot "System32\drivers\etc\hosts"
+$WorkDir = Join-Path $env:ProgramData "RobloxCDNAutoFix"
+$BackupDir = Join-Path $WorkDir "backups"
+$OriginalMappingPath = Join-Path $WorkDir "original-domain-mappings.txt"
 
 function Write-OperationResult {
     param(
@@ -72,6 +77,163 @@ function Restart-AsAdministrator {
     }
 }
 
+function Get-DomainMappingLines {
+    param([string[]]$Lines)
+
+    $result = @()
+
+    foreach ($line in $Lines) {
+        if ($line -notmatch "^\s*(?<IP>\d{1,3}(?:\.\d{1,3}){3})\s+(?<Hosts>[^#]+)") {
+            continue
+        }
+
+        $ip = $Matches.IP
+        $hosts = @($Matches.Hosts.Trim() -split "\s+")
+        $mapping = "{0}`t{1}" -f $ip, $Domain
+
+        if (($hosts -contains $Domain) -and ($result -notcontains $mapping)) {
+            $result += $mapping
+        }
+    }
+
+    return $result
+}
+
+function Get-OriginalDomainMappings {
+    if (Test-Path -LiteralPath $OriginalMappingPath) {
+        return @([System.IO.File]::ReadAllLines($OriginalMappingPath))
+    }
+
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        return @()
+    }
+
+    $backups = @(Get-ChildItem -LiteralPath $BackupDir -Filter "hosts_*.bak" -File -ErrorAction SilentlyContinue | Sort-Object Name)
+
+    foreach ($backup in $backups) {
+        $backupLines = [System.IO.File]::ReadAllLines($backup.FullName)
+        $hasManagedEntry = $null -ne ($backupLines | Where-Object { $_ -match "^\s*#\s*RobloxCDNAutoFix\b" } | Select-Object -First 1)
+
+        if (-not $hasManagedEntry) {
+            return @(Get-DomainMappingLines -Lines $backupLines)
+        }
+    }
+
+    return @()
+}
+
+function Remove-ManagedDomainLines {
+    param([string[]]$Lines)
+
+    $result = @()
+
+    foreach ($line in $Lines) {
+        if ($line -match "^\s*#\s*RobloxCDNAutoFix\b") {
+            continue
+        }
+
+        $content = $line
+        $comment = ""
+        $commentIndex = $line.IndexOf("#")
+
+        if ($commentIndex -ge 0) {
+            $content = $line.Substring(0, $commentIndex)
+            $comment = $line.Substring($commentIndex).Trim()
+        }
+
+        if ($content -notmatch "^\s*(?<IP>\d{1,3}(?:\.\d{1,3}){3})\s+(?<Hosts>.+?)\s*$") {
+            $result += $line
+            continue
+        }
+
+        $ip = $Matches.IP
+        $hosts = @($Matches.Hosts.Trim() -split "\s+")
+
+        if ($hosts -notcontains $Domain) {
+            $result += $line
+            continue
+        }
+
+        $remainingHosts = @($hosts | Where-Object { $_ -ine $Domain })
+
+        if ($remainingHosts.Count -gt 0) {
+            $updatedLine = $ip + "`t" + ($remainingHosts -join " ")
+
+            if (-not [string]::IsNullOrWhiteSpace($comment)) {
+                $updatedLine += " " + $comment
+            }
+
+            $result += $updatedLine
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($comment)) {
+            $result += $comment
+        }
+    }
+
+    return $result
+}
+
+function Reset-AutoFixState {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+
+    if ($null -ne $task) {
+        if ($task.State -eq "Running") {
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        }
+
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+
+    if (Test-Path -LiteralPath $HostsPath) {
+        $currentLines = [System.IO.File]::ReadAllLines($HostsPath)
+        $hasManagedEntry = $null -ne ($currentLines | Where-Object { $_ -match "^\s*#\s*RobloxCDNAutoFix\b" } | Select-Object -First 1)
+        $hasBackups = (Test-Path -LiteralPath $BackupDir) -and ($null -ne (Get-ChildItem -LiteralPath $BackupDir -Filter "hosts_*.bak" -File -ErrorAction SilentlyContinue | Select-Object -First 1))
+        $shouldResetHosts = $hasManagedEntry -or (Test-Path -LiteralPath $OriginalMappingPath) -or $hasBackups
+
+        if ($shouldResetHosts) {
+            $originalMappings = @(Get-OriginalDomainMappings)
+            $resetLines = @(Remove-ManagedDomainLines -Lines $currentLines)
+
+            if ($originalMappings.Count -gt 0) {
+                if (($resetLines.Count -gt 0) -and (-not [string]::IsNullOrWhiteSpace($resetLines[$resetLines.Count - 1]))) {
+                    $resetLines += ""
+                }
+
+                $resetLines += $originalMappings
+            }
+
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+            try {
+                [System.IO.File]::WriteAllLines($HostsPath, $resetLines, $utf8NoBom)
+            }
+            catch {
+                try {
+                    [System.IO.File]::WriteAllLines($HostsPath, $currentLines, $utf8NoBom)
+                }
+                catch {
+                }
+
+                throw
+            }
+
+            & ipconfig.exe /flushdns | Out-Null
+        }
+    }
+
+    if (Test-Path -LiteralPath $WorkDir) {
+        $programDataRoot = [System.IO.Path]::GetFullPath($env:ProgramData).TrimEnd("\")
+        $resolvedWorkDir = [System.IO.Path]::GetFullPath($WorkDir).TrimEnd("\")
+        $expectedWorkDir = Join-Path $programDataRoot "RobloxCDNAutoFix"
+
+        if ($resolvedWorkDir -ine $expectedWorkDir) {
+            throw "Небезопасный путь рабочей папки: $resolvedWorkDir"
+        }
+
+        Remove-Item -LiteralPath $resolvedWorkDir -Recurse -Force
+    }
+}
+
 if ($Action -eq "Status") {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 
@@ -85,6 +247,12 @@ if ($Action -eq "Status") {
 }
 
 Restart-AsAdministrator
+
+if ($Action -eq "Reset") {
+    Reset-AutoFixState
+    Write-OperationResult -Message "Сброс завершён: задача удалена, исходная запись CDN восстановлена, DNS-кэш и служебные данные очищены." -Color "Green"
+    exit 0
+}
 
 if ($Action -eq "Uninstall") {
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
