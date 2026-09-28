@@ -1,12 +1,12 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 set "SCRIPT=%~dp0Manage-AutoFixTask.ps1"
 if not exist "%SCRIPT%" (
   echo Manage-AutoFixTask.ps1 was not found next to this launcher.
   pause
   exit /b 1
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -Action Uninstall
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -Action Uninstall
 set "RESULT=%errorlevel%"
 
 echo.

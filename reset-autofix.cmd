@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal DisableDelayedExpansion
 
 set "SCRIPT=%~dp0Manage-AutoFixTask.ps1"
 if not exist "%SCRIPT%" (
@@ -8,15 +8,15 @@ if not exist "%SCRIPT%" (
   exit /b 1
 )
 
-echo This will remove the scheduled task, restore the original CDN mapping,
-echo flush the DNS cache, and delete AutoFix logs and backups.
+echo This removes the task, installed program and AutoFix hosts block.
+echo Backups, logs and your repository will be preserved.
 echo The project files themselves will not be deleted.
 echo.
 
 "%SystemRoot%\System32\choice.exe" /C YN /N /M "Continue? [Y/N] "
 if errorlevel 2 exit /b 0
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -Action Reset
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -Action Reset
 set "RESULT=%errorlevel%"
 
 echo.
