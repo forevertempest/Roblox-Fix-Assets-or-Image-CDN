@@ -10,13 +10,13 @@ using System.Runtime.InteropServices;
 
 namespace RobloxCDNAutoFix;
 
-internal static class Program
+internal static partial class Program
 {
     private const string Domain = "tr.rbxcdn.com";
     private const string TaskManager = "Manage-AutoFixTask.ps1";
-    private const string FixScript = "Roblox-CDN-AutoFix.ps1";
-    private const string InstallDirectoryName = "RobloxCDNAutoFix";
+    private const string InstallDirectoryName = "RobloxCDNAutoFixV2";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly CancellationTokenSource Lifetime = new();
 
     private sealed class Preferences
     {
@@ -44,6 +44,7 @@ internal static class Program
     public static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
+        Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; Lifetime.Cancel(); };
         if (!IsWindows)
         {
             Console.Error.WriteLine("Roblox CDN AutoFix поддерживает только Windows.");
@@ -59,8 +60,15 @@ internal static class Program
         try
         {
             using var pipe = new NamedPipeClientStream(".", "RobloxCDNAutoFix-" + pipeId.ToString("N"),
-                PipeDirection.Out, PipeOptions.Asynchronous, TokenImpersonationLevel.Anonymous);
+                PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Anonymous);
             await pipe.ConnectAsync(15000);
+            _ = Task.Run(async () =>
+            {
+                try { await pipe.ReadAsync(new byte[1]); }
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
+                finally { Lifetime.Cancel(); }
+            });
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
             var originalOutput = Console.Out;
             var originalError = Console.Error;
@@ -119,11 +127,21 @@ internal static class Program
         {
             case "check":
             case "fix":
-                return await RunWindowsScriptAsync(FixScript, action);
+            case "repair":
+            case "--repair":
+            case "diagnose":
+            case "--diagnose":
+            case "dry-run":
+            case "--dry-run":
+            case "restore":
+            case "--restore":
+                return await RunV2Async(args);
             case "reset":
                 if (!args.Contains("--yes", StringComparer.Ordinal) && !AskYesNo("Убрать управляемую запись CDN из hosts?"))
                     return 0;
-                return await RunWindowsManagerAsync("Reset", preferences, "reset");
+                if (!IsAdministrator()) return await RelaunchElevatedAsync(["reset", "--yes", "--elevated"]);
+                if (await RunV2Async(["--restore"]) != 0) return 1;
+                return await RunWindowsManagerAsync("Uninstall", preferences, "monitor");
             case "monitor":
                 return await HandleMonitorAsync(args.Skip(1).FirstOrDefault() ?? "status", preferences);
             case "settings":
@@ -139,7 +157,7 @@ internal static class Program
                 PrintHelp();
                 return 0;
             case "--version":
-                WriteLine("Roblox CDN AutoFix 1.0.0 • Tempest");
+                WriteLine("Roblox CDN AutoFix 2.0.0 • Tempest");
                 return 0;
             default:
                 PrintHelp();
@@ -158,6 +176,8 @@ internal static class Program
             Console.WriteLine("  [4]  Сбросить изменение hosts");
             Console.WriteLine("  [5]  Состояние автопроверки");
             Console.WriteLine("  [6]  Информация — функции и примеры");
+            Console.WriteLine("  [7]  Диагностика (без изменений)");
+            Console.WriteLine("  [8]  Найти лучший IP (dry-run)");
             Console.WriteLine("  [0]  Выход");
             Console.Write("\n  Выбор › ");
             var key = Console.ReadLine()?.Trim();
@@ -182,6 +202,12 @@ internal static class Program
                 case "6":
                     ShowInformation(preferences);
                     break;
+                case "7":
+                    await RunMenuActionAsync(() => RunV2Async(["--diagnose", "--verbose"]));
+                    break;
+                case "8":
+                    await RunMenuActionAsync(() => RunV2Async(["--dry-run", "--verbose"]));
+                    break;
                 case "0":
                 case null:
                     return 0;
@@ -193,6 +219,25 @@ internal static class Program
     {
         (string Title, string Description)[] topics =
         [
+            ("AutoFix v2: автоматический подбор", """
+                Теперь IP обнаруживаются через системный DNS и независимые DoH resolver.
+                Рабочий cache перепроверяется; встроенные адреса — только аварийный fallback.
+                Google запрашивается с нулевой ECS-подсетью, без передачи подсети пользователя.
+                AWS CloudFront используется только для проверки диапазона: никаких сканирований.
+                Принадлежность AWS не заменяет TLS/SNI и проверку HTTPS для Roblox hostname.
+                Финалисты проходят три запроса; выбор учитывает median latency и стабильность.
+
+                --diagnose: текущее состояние; --dry-run: поиск без изменения hosts.
+                --repair: исправить при необходимости; --restore: удалить только свой блок.
+                --verbose: DNS, TTL, TCP, TLS, HTTPS, AWS и таблица кандидатов.
+                --force: полный подбор, но не замена рабочего IP более медленным.
+                --config "C:\\path\\config.json": параметры targets, workers, cache и score.
+
+                Player перезапускается только после изменения hosts, flushdns и успешной
+                проверки. Studio не закрывается. Игровая сессия может не восстановиться.
+                Ошибка перезапуска не отменяет удачный Fix. Токены и cookies не читаются.
+                Подробнее: README.md и config.example.json версии 2.
+                """),
             ("Что делает AutoFix", """
                 Roblox получает часть файлов через CDN — серверы доставки контента.
                 AutoFix проверяет доступность tr.rbxcdn.com по HTTPS и при проблеме
@@ -324,14 +369,15 @@ internal static class Program
                 Фоновые операции записываются в журналы; отдельные консоли скрыты.
                 Запрос прав администратора нужен для системных изменений.
 
-                Каталог: %ProgramData%\RobloxCDNAutoFix-Secure\
-                Журналы: RobloxCDNAutoFix.log, RobloxCDNMonitor.log, Installer.log, Console.log.
+                Каталог: %ProgramData%\RobloxCDNAutoFixV2-Secure\
+                Журналы: AutoFixV2.log, RobloxCDNMonitor.log, Installer.log, Console.log.
                 Размер журналов ограничивается ротацией. До записи hosts создаётся backup.
 
                 Пример: автоматический ремонт не сработал — посмотри журнал наблюдателя,
                 затем при необходимости запусти ручную проверку и прочитай её вывод.
                 Программа не отправляет телеметрию. Сетевые обращения нужны для CDN
-                tr.rbxcdn.com и поиска его IP через Google / Cloudflare DNS-over-HTTPS.
+                настроенных Roblox CDN, Google / Cloudflare / Quad9 DNS-over-HTTPS
+                и официального AWS ip-ranges.json для проверки диапазонов.
                 """),
             ("Команды консоли", """
                 Вместо меню можно передать команду исполняемому файлу:
@@ -410,7 +456,7 @@ internal static class Program
         Console.WriteLine("│      ██║   ██╔══╝  ██║╚██╔╝██║██╔═══╝ ██╔══╝  ╚════██║   ██║    │");
         Console.WriteLine("│      ██║   ███████╗██║ ╚═╝ ██║██║     ███████╗███████║   ██║    │");
         Console.WriteLine("│      ╚═╝   ╚══════╝╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝   ╚═╝    │");
-        Console.WriteLine("│                 ROBLOX CDN AUTOFIX  •  v1.0.0                  │");
+        Console.WriteLine("│                 ROBLOX CDN AUTOFIX  •  v2.0.0                  │");
         Console.WriteLine("╰──────────────────────────────────────────────────────────────╯");
         Console.ResetColor();
         Console.WriteLine("  Разработчик: Tempest  •  Discord: foreverfame  •  TGC: t.me/tempestdevelop");
@@ -494,23 +540,6 @@ internal static class Program
         }, preferences, "monitor");
     }
 
-    private static async Task<int> RunWindowsScriptAsync(string scriptName, string command)
-    {
-        if (!IsAdministrator())
-            return await RelaunchElevatedAsync([command, "--elevated"]);
-        WriteLine("Проверка Roblox CDN запущена. Ожидай результат…");
-        var source = EnsureWindowsSources();
-        try
-        {
-            var protectedScript = Path.Combine(source, scriptName);
-            var powershellPath = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-            return await RunProcessAsync(powershellPath, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", protectedScript, "-Quiet"]);
-        }
-        finally
-        {
-            TryRemoveWindowsSources();
-        }
-    }
     private static async Task<int> RunWindowsManagerAsync(string action, Preferences preferences, string command)
     {
         if (!IsAdministrator())
@@ -526,6 +555,10 @@ internal static class Program
             {
                 elevated.AddRange(["--cooldown", preferences.CooldownMinutes.ToString(), "--auto-repair", preferences.AutoRepair.ToString(),
                     "--process-names", string.Join(',', preferences.ProcessNames)]);
+                var originalArgs = Environment.GetCommandLineArgs();
+                var configIndex = Array.IndexOf(originalArgs, "--config");
+                if (configIndex >= 0 && configIndex + 1 < originalArgs.Length)
+                    elevated.AddRange(["--config", Path.GetFullPath(originalArgs[configIndex + 1])]);
             }
             return await RelaunchElevatedAsync(elevated);
         }
@@ -537,7 +570,8 @@ internal static class Program
             "Reset" => "Сброс изменений AutoFix…",
             _ => "Проверка состояния автопроверки…"
         });
-        var source = EnsureWindowsSources();
+        using var stagingLock = LockStaging();
+        var source = EnsureWindowsSources(action.Equals("Install", StringComparison.OrdinalIgnoreCase));
         try
         {
             var manager = Path.Combine(source, TaskManager);
@@ -570,7 +604,7 @@ internal static class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint clientProcessId);
 
-    #pragma warning disable CA1416
+#pragma warning disable CA1416
     private static async Task<int> RunElevatedWindowsAsync(string executable, IReadOnlyList<string> arguments)
     {
         var pipeId = Guid.NewGuid().ToString("N");
@@ -580,11 +614,13 @@ internal static class Program
         security.AddAccessRule(new PipeAccessRule(identity.User!, PipeAccessRights.FullControl, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
             PipeAccessRights.ReadWrite, AccessControlType.Allow));
-        using var pipe = NamedPipeServerStreamAcl.Create("RobloxCDNAutoFix-" + pipeId, PipeDirection.In, 1,
+        using var pipe = NamedPipeServerStreamAcl.Create("RobloxCDNAutoFix-" + pipeId, PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 4096, 4096, security);
         var start = new ProcessStartInfo(executable)
         {
-            UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden
         };
         foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
@@ -607,15 +643,21 @@ internal static class Program
         }
         if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var clientId) || clientId != process.Id)
             throw new IOException("Не удалось подтвердить источник журнала операции.");
+        using var cancellationRelay = Lifetime.Token.Register(() =>
+        {
+            try { pipe.WriteByte(1); pipe.Flush(); }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
+        });
         using var reader = new StreamReader(pipe, Encoding.UTF8);
         while (await reader.ReadLineAsync() is { } line)
             Console.WriteLine(line);
         await exitTask;
         return process.ExitCode;
     }
-    #pragma warning restore CA1416
+#pragma warning restore CA1416
 
-    private static void AssertNoLink(string path)
+    internal static void AssertNoLink(string path)
     {
         var fullPath = Path.GetFullPath(path);
         var current = new DirectoryInfo(Path.GetDirectoryName(fullPath)!);
@@ -637,8 +679,8 @@ internal static class Program
             ?? throw new IOException("Встроенный ресурс не найден: " + fileName);
     }
 
-    #pragma warning disable CA1416
-    private static void AssertWindowsProtectedPath(string path)
+#pragma warning disable CA1416
+    internal static void AssertWindowsProtectedPath(string path)
     {
         if (!IsWindows)
             throw new PlatformNotSupportedException("Защищённая Windows-папка доступна только в Windows.");
@@ -663,6 +705,7 @@ internal static class Program
             FileSystemRights.TakeOwnership | FileSystemRights.DeleteSubdirectoriesAndFiles;
         foreach (var rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)).OfType<FileSystemAccessRule>())
         {
+            if ((rule.PropagationFlags & PropagationFlags.InheritOnly) != 0) continue;
             if (rule.AccessControlType == AccessControlType.Allow && !trusted.Contains(rule.IdentityReference.Value) &&
                 ((rule.FileSystemRights & writeMask) != 0 ||
                  (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl))
@@ -670,9 +713,23 @@ internal static class Program
         }
     }
 
-    private static void EnsureWindowsProtectedDirectory(string path)
+    internal static void EnsureWindowsProtectedDirectory(string path)
     {
         AssertNoLink(path);
+        var ancestor = Directory.GetParent(Path.GetFullPath(path));
+        while (ancestor is not null)
+        {
+            var ancestorSecurity = ancestor.GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner);
+            var owner = ancestorSecurity.GetOwner(typeof(SecurityIdentifier))?.Value;
+            var trusted = new[] { "S-1-5-18", "S-1-5-32-544", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" };
+            if (!trusted.Contains(owner)) throw new UnauthorizedAccessException("Untrusted installation ancestor.");
+            foreach (var rule in ancestorSecurity.GetAccessRules(true, true, typeof(SecurityIdentifier)).OfType<FileSystemAccessRule>())
+                if (rule.AccessControlType == AccessControlType.Allow && (rule.PropagationFlags & PropagationFlags.InheritOnly) == 0 &&
+                    !trusted.Contains(rule.IdentityReference.Value) && (rule.FileSystemRights &
+                    (FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership)) != 0)
+                    throw new UnauthorizedAccessException("Writable installation ancestor.");
+            ancestor = ancestor.Parent;
+        }
         if (Directory.Exists(path))
         {
             AssertWindowsProtectedPath(path);
@@ -685,7 +742,7 @@ internal static class Program
         AssertWindowsProtectedPath(path);
     }
 
-    private static string EnsureWindowsSources()
+    private static string EnsureWindowsSources(bool includeRuntime = true)
     {
         try
         {
@@ -698,7 +755,7 @@ internal static class Program
             EnsureWindowsProtectedDirectory(WindowsInstallRoot);
             EnsureWindowsProtectedDirectory(WindowsSourceDirectory);
 
-            var expected = new HashSet<string>(EmbeddedWindowsScripts, StringComparer.OrdinalIgnoreCase);
+            var expected = new HashSet<string>(EmbeddedWindowsScripts.Concat(["AutoFixV2.exe", "autofix-config.json"]), StringComparer.OrdinalIgnoreCase);
             foreach (var existing in Directory.EnumerateFileSystemEntries(WindowsSourceDirectory))
             {
                 AssertNoLink(existing);
@@ -731,6 +788,15 @@ internal static class Program
                         File.Delete(temporary);
                 }
             }
+            if (includeRuntime)
+            {
+                var executable = Environment.ProcessPath ?? throw new IOException("Executable path unavailable.");
+                AssertNoLink(executable);
+                using (var input = new FileStream(executable, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    Core.SecureFiles.Copy(Path.Combine(WindowsSourceDirectory, "AutoFixV2.exe"), input);
+                Core.SecureFiles.Write(Path.Combine(WindowsSourceDirectory, "autofix-config.json"),
+                    JsonSerializer.SerializeToUtf8Bytes(LoadV2Config(Environment.GetCommandLineArgs().Skip(1).ToArray()), Core.AutoFixConfig.Json));
+            }
             return WindowsSourceDirectory;
         }
         catch (Exception exception)
@@ -747,7 +813,7 @@ internal static class Program
             if (!Directory.Exists(WindowsSourceDirectory))
                 return;
             AssertWindowsProtectedPath(WindowsSourceDirectory);
-            foreach (var name in EmbeddedWindowsScripts)
+            foreach (var name in EmbeddedWindowsScripts.Concat(["AutoFixV2.exe", "autofix-config.json"]))
             {
                 var file = Path.Combine(WindowsSourceDirectory, name);
                 if (File.Exists(file))
@@ -764,7 +830,7 @@ internal static class Program
             WriteLine("Не удалось удалить временную защищённую staging-папку: " + exception.Message, ConsoleColor.Yellow);
         }
     }
-    #pragma warning restore CA1416
+#pragma warning restore CA1416
 
     private static async Task<int> RunProcessAsync(string executable, IReadOnlyList<string> arguments)
     {
@@ -877,7 +943,7 @@ internal static class Program
             return;
         try
         {
-            var dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RobloxCDNAutoFix-Secure");
+            var dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RobloxCDNAutoFixV2-Secure");
             if (!Directory.Exists(dataDirectory))
                 return;
             AssertWindowsProtectedPath(dataDirectory);
@@ -900,7 +966,7 @@ internal static class Program
         catch { }
     }
 
-    #pragma warning disable CA1416
+#pragma warning disable CA1416
     private static bool IsAdministrator()
     {
         if (IsWindows)
@@ -911,7 +977,7 @@ internal static class Program
         }
         return false;
     }
-    #pragma warning restore CA1416
+#pragma warning restore CA1416
 
     private static int ReadInt(string prompt, int current, int minimum, int maximum)
     {
@@ -943,6 +1009,15 @@ internal static class Program
               windows-x64.exe status    Show monitoring status
               windows-x64.exe settings  Configure the product
               windows-x64.exe info      Browse feature descriptions and examples
+
+            AutoFix v2:
+              --diagnose               Current DNS/TLS/HTTPS; no changes
+              --dry-run                Discover and rank candidates; no changes
+              --repair                 Repair only when needed
+              --restore                Remove owned hosts entries; keep monitoring
+              --verbose                Detailed probes and candidate report
+              --force                  Discover even when healthy; never choose slower
+              --config <path.json>     Validated v2 configuration (also monitor install)
 
             Windows releases embed the protected Task Scheduler setup scripts in the single executable.
             """);
