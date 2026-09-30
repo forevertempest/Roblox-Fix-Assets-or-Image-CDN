@@ -21,6 +21,7 @@ Set-Location -LiteralPath ([Environment]::SystemDirectory)
 if ($ProtectedSource) {
     Assert-ProtectedPath $PSScriptRoot
     $expectedSourceFiles = @($script:RuntimeFiles + 'Manage-AutoFixTask.ps1')
+    if ($Action -in @('Status', 'Uninstall')) { $expectedSourceFiles = @($expectedSourceFiles | Where-Object { $_.EndsWith('.ps1') }) }
     foreach ($sourceEntry in @(Get-ChildItem -LiteralPath $PSScriptRoot -Force)) {
         if ($sourceEntry.Name -notin $expectedSourceFiles) {
             throw "В защищённой staging-папке найден неожиданный файл: $($sourceEntry.FullName)"
@@ -51,6 +52,13 @@ if (-not (Test-IsAdministrator)) {
     catch { Write-Host $_.Exception.Message; exit 1 }
 }
 $autoRepairEnabled = [bool]::Parse($AutoRepair)
+if ($Action -eq 'Reset') {
+    $native = Join-Path $PSScriptRoot 'AutoFixV2.exe'
+    if (-not (Test-Path -LiteralPath $native)) { throw 'Используй windows-x64.exe reset для безопасного сброса v2.' }
+    & $native --restore
+    if ($LASTEXITCODE -ne 0) { throw 'Сброс hosts не завершён; удаление отменено.' }
+    $Action = 'Uninstall'
+}
 Import-Module (Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1') -ErrorAction Stop
 
 function Get-AutoFixTask {
@@ -79,6 +87,9 @@ $previousXml = $null
 $registered = $false
 $newRelease = $null
 $previousRelease = $null
+$taskWasTouched = $false
+$settingsBefore = $null
+$settingsChanged = $false
 try {
     Initialize-AutoFixData
     $installationLock = Enter-AutoFixLock -Name 'installation.lock'
@@ -110,33 +121,24 @@ try {
             catch { Write-RotatingLog 'Installer.log' 'Предыдущая копия повреждена: обновление без автоматического возврата к ней.' }
         }
     }
-    Stop-AutoFixTask
     $operationLock = Enter-AutoFixLock
+    $taskWasTouched = $true
+    Stop-AutoFixTask
     if ($Action -eq 'Install') {
+        if (Test-Path -LiteralPath $script:MonitorSettingsPath) {
+            Assert-ProtectedPath $script:MonitorSettingsPath
+            $settingsBefore = [IO.File]::ReadAllBytes($script:MonitorSettingsPath)
+        }
+        $settingsChanged = $true
         Write-MonitorSettings -CooldownMinutes $CooldownMinutes -AutoRepair $autoRepairEnabled -ProcessNames $ProcessNames
     }
-    if ($Action -in @('Uninstall', 'Reset')) {
-        if ($Action -eq 'Reset') {
-            $snapshot = Read-HostsSnapshot
-            $clean = Get-UnmanagedHostsText $snapshot.Text
-            if ($clean -cne $snapshot.Text) {
-                $transaction = Write-HostsTransaction $snapshot $clean
-                try { Clear-AutoFixDns }
-                catch { Set-HostsBytes $transaction.Before $transaction.AfterHash; throw }
-            }
-            $statePath = Join-Path $script:DataRoot 'last-monitor-repair.txt'
-            if (Test-Path -LiteralPath $statePath) {
-                Assert-ProtectedPath $statePath
-                [IO.File]::Delete($statePath)
-            }
-        }
+    if ($Action -eq 'Uninstall') {
         if ($null -ne (Get-AutoFixTask)) {
             Unregister-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -Confirm:$false
         }
         Remove-ProtectedTree $script:InstallRoot
         Write-RotatingLog 'Installer.log' ("$Action завершён. Защищённая копия удалена; резервные копии сохранены в " + $script:DataRoot)
-        if ($Action -eq 'Reset') { Write-Host 'Изменения AutoFix в hosts сброшены. Автопроверка удалена.' }
-        else { Write-Host 'Автопроверка удалена. Записи hosts не изменены.' }
+        Write-Host 'Автопроверка удалена. Записи hosts не изменены.'
         Write-Host ("Резервные копии и журналы сохранены: " + $script:DataRoot)
         exit 0
     }
@@ -152,16 +154,20 @@ try {
         Assert-NoReparsePoint $source
         $sourceStream = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
-            if ($sourceStream.Length -gt 1MB) { throw "Слишком большой файл: $name" }
+            $limit = if ($name -eq 'AutoFixV2.exe') { 150MB } else { 1MB }
+            if ($sourceStream.Length -gt $limit) { throw "Слишком большой файл: $name" }
             $destination = Join-Path $newRelease $name
             $targetStream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
             try { $sourceStream.CopyTo($targetStream); $targetStream.Flush($true) }
             finally { $targetStream.Dispose() }
         }
         finally { $sourceStream.Dispose() }
-        $parseErrors = $null
-        [Management.Automation.Language.Parser]::ParseFile($destination, [ref]$null, [ref]$parseErrors) | Out-Null
-        if ($parseErrors.Count -gt 0) { throw "Ошибка синтаксиса: $name" }
+        if ($name.EndsWith('.ps1')) {
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseFile($destination, [ref]$null, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { throw "Ошибка синтаксиса: $name" }
+        }
+        if ($name.EndsWith('.json')) { Get-Content -LiteralPath $destination -Raw -Encoding UTF8 | ConvertFrom-Json | Out-Null }
         $manifest[$name] = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
     }
     [IO.File]::WriteAllText((Join-Path $newRelease 'manifest.json'), ($manifest | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
@@ -196,7 +202,26 @@ catch {
     if ($Action -eq 'Install') {
         try {
             if ($registered) { Stop-AutoFixTask; Unregister-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -Confirm:$false }
-            if ($previousXml) {
+            if ($settingsChanged) {
+                Assert-NoReparsePoint $script:MonitorSettingsPath
+                if ($null -ne $settingsBefore) {
+                    $temporarySettings = Join-Path $script:DataRoot ([Guid]::NewGuid().ToString('N') + '.tmp')
+                    try {
+                        [IO.File]::WriteAllBytes($temporarySettings, $settingsBefore)
+                        if (Test-Path -LiteralPath $script:MonitorSettingsPath) {
+                            Assert-ProtectedPath $script:MonitorSettingsPath
+                            [IO.File]::Replace($temporarySettings, $script:MonitorSettingsPath, [NullString]::Value)
+                        }
+                        else { [IO.File]::Move($temporarySettings, $script:MonitorSettingsPath) }
+                    }
+                    finally { if ([IO.File]::Exists($temporarySettings)) { [IO.File]::Delete($temporarySettings) } }
+                }
+                elseif (Test-Path -LiteralPath $script:MonitorSettingsPath) {
+                    Assert-ProtectedPath $script:MonitorSettingsPath
+                    [IO.File]::Delete($script:MonitorSettingsPath)
+                }
+            }
+            if ($previousXml -and $taskWasTouched) {
                 Register-ScheduledTask -TaskName $script:TaskName -TaskPath '\' -Xml $previousXml -Force | Out-Null
                 Protect-AutoFixTask
                 Start-ScheduledTask -TaskName $script:TaskName -TaskPath '\'

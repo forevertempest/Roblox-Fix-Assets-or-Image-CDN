@@ -1,9 +1,9 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $executable = Join-Path $root 'release\windows-x64.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Build the Windows release first.' }
 
-$settingsDirectory = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Tempest\RobloxCDNAutoFix'
+$settingsDirectory = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Tempest\RobloxCDNAutoFixV2'
 $settingsPath = Join-Path $settingsDirectory 'settings.json'
 $hadSettings = Test-Path -LiteralPath $settingsPath -PathType Leaf
 $originalBytes = if ($hadSettings) { [IO.File]::ReadAllBytes($settingsPath) } else { $null }

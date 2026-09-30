@@ -1,205 +1,75 @@
-# Аудит безопасности Roblox CDN AutoFix
+# Security model / Модель безопасности
 
-Дата: 28 сентября 2026 года. Область: все исполняемые файлы репозитория, установщик, мониторинг, запись hosts, резервные копии и документация.
+## Trust boundaries
 
-Это отчёт о проверке исходников и конкретных тестах, а не гарантия отсутствия любых уязвимостей. Модель угроз — непривилегированный локальный процесс после установки; уже получивший права администратора злоумышленник находится вне этой границы защиты.
+- Репозиторий и скачанный EXE доверяются **только при явном запуске пользователем**. Перед UAC нужно доверять источнику бинарника. Сборка не подписана; SHA-256 подтверждает совпадение, не личность издателя.
+- SYSTEM-задача не запускает код из репозитория, Downloads, Desktop, AppData или TEMP. Установщик сначала создаёт защищённый staging, копирует embedded scripts/native EXE/validated config, формирует отдельный release и SHA-256 manifest; только затем регистрирует задачу.
+- Installed root: `%ProgramFiles%\RobloxCDNAutoFixV2`; persistent data: `%ProgramData%\RobloxCDNAutoFixV2-Secure`. SYSTEM runtime extraction is explicitly redirected to protected `dotnet-bundle` storage.
+- ACL: `O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)`. Owner: Administrators. SYSTEM and Administrators: FullControl. Built-in Users: ReadAndExecute, no write/delete/ACL changes. Reparse points and untrusted writable ownership/ancestors are refused.
+- Task ACL: `O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)`. SYSTEM/Highest is needed for hosts modification. The action uses absolute Windows PowerShell and a quoted fixed installed `.ps1`; no `cmd /c`. Native `--system-settings` also verifies protected location and runtime hashes.
+- Hashes detect corruption or unexpected changes within protected storage. They do not defend against an administrator who can replace both files and manifest. No claim of security against kernel/admin compromise.
 
-## 1. Найденные проблемы
+## Audit findings and treatment
 
-| Проблема | Исправление |
+| Area | Treatment in v2 |
 |---|---|
-| SYSTEM выполнял CMD/VBS/PowerShell из изменяемой пользователем папки | Отдельная установленная копия с защищённым ACL; задача вызывает только её |
-| Подмена программ через PATH, текущий каталог или curl-конфигурацию | Абсолютные системные exe, доверенный рабочий каталог, ограниченный PSModulePath/PATH, curl --disable |
-| Удаление всех записей целевого домена могло затронуть чужие строки | Только собственный BEGIN/END-блок; конфликтующая чужая запись сохраняется |
-| Резервная копия в пользовательской папке не является доверенным источником для SYSTEM | Новые снимки в защищённом ProgramData; старые файлы не импортируются автоматически |
-| Запись hosts непосредственно в файл и конкурирующие операции | Снимок до записи, уникальный backup, SHA-256, временный файл в том же защищённом каталоге, File.Replace, блокировки |
-| Сложные цепочки запуска и ненадёжная передача результата через временные файлы | CMD только для ручного UX; UAC через Start-Process -Verb RunAs, код завершения и защищённый лог |
-| Неполное удаление и небезопасный охват сброса | Проверенные абсолютные границы удаления; репозиторий и чужие hosts-строки не удаляются |
-| Неограниченные журналы и риск очереди повторных проверок | Ротация, cooldown ремонта и объединение событий, пришедших во время проверки |
-| Изменяемые разрешения существующей задачи при обновлении | ACL самой задачи явно закрепляется за SYSTEM/Administrators |
+| Static-address maintenance | Multi-provider DNS, revalidated cache; emergency fallback only |
+| AWS address mistaken for Roblox | Membership is metadata only; strict target TLS/SNI + HTTPS remains mandatory |
+| False success from open TCP or arbitrary HTTP | Certificate validation, CDN headers, status policy, repeated samples |
+| SYSTEM executing user-writable files | Protected versioned installation + ACL + absolute paths + manifest |
+| SYSTEM reading user config | Validated snapshot installed with protected runtime; no external `--config` with `--system-settings` |
+| Restarting user executable as SYSTEM | Duplicate original non-elevated Player token; validate identity/path/signature; launch as original user |
+| Reusing Player secrets | No original command line, cookies, join tickets or authentication data read/logged |
+| User hosts loss | Managed-only text transform, foreign override refusal, backups, atomic replace and conflict hashes |
+| Failure/cancellation after applying | Rollback and flush; protected recovery journal for interrupted transactions |
+| Concurrent repair/install | Exclusive operation, installation and staging locks; candidate workers own separate objects |
+| SSRF/path/command injection | Roblox DNS names only, public IPv4 parser, allowlisted resolvers, ArgumentList/API calls, no dynamic code evaluation |
+| DLL/PATH hijacking | Absolute OS executable paths; project P/Invoke libraries load from System32; minimal PowerShell module PATH |
+| Log growth | 1 MiB rotation plus one previous file |
 
-## 2. Изменённые файлы
+Search audit covers `Invoke-Expression`, `iex`, `DownloadString`, `DownloadFile`, `WebClient`, shell execution, encoded commands, TLS bypass, deletion paths and P/Invoke. No dynamic downloaded code or encoded PowerShell execution is used. **Base64url is DNS wire-format transport, not executable code.** `Start-Process -Verb RunAs -WindowStyle Hidden` is retained for explicit administrative operations/tests. Scoped recursive deletion is restricted to the fixed protected installation tree and validates every child; repository deletion is refused.
 
-- `Manage-AutoFixTask.ps1`: защищённая установка, версионное обновление, откат установки, удаление, reset, UAC, ACL задачи.
-- `Roblox-CDN-Monitor.ps1`: WMI/CIM-наблюдатель вместо VBS, прямой запуск защищённого исправления, целостность и cooldown.
-- `Roblox-CDN-AutoFix.ps1`: сохранена диагностика DNS/DoH/HTTPS; безопасные пути, запись и откат hosts.
-- `install-monitor.cmd`, `uninstall-monitor.cmd`, `reset-autofix.cmd`, `run-monitor.cmd`, `run-fix.cmd`: абсолютный PowerShell, quoted paths, отключён delayed expansion.
-- `README.md`: русская и английская документация приведены в соответствие с новой архитектурой.
-- Добавлены `AutoFix.Common.ps1`, `.gitignore`, этот отчёт и четыре теста в `tests\`.
-- Удалён `Roblox-CDN-Watcher.vbs`: его функция сохранена в PowerShell-наблюдателе.
+`build-release.ps1` contacts NuGet for official .NET SDK/runtime assets during development. This is not a runtime telemetry endpoint. Runtime network destinations are the configured Roblox CDN names, Google/Cloudflare/optional Quad9 DNS and the official AWS ranges endpoint. Windows DNS/TLS may use OS-managed resolver/certificate infrastructure; AutoFix neither disables certificate validation nor controls all Windows background traffic.
 
-## 3. Установка и безопасное обновление
+## Validation commands
 
-1. Проверяются права; без них установщик запрашивает UAC. Отмена не выполняет привилегированную часть.
-2. Создаются защищённый каталог данных и блокировка установки. Небезопасные существующие каталоги, неподходящий владелец и reparse points отвергаются, а не «чинятся» рекурсивно.
-3. Существующая задача защищается и останавливается. Сохраняется XML только задачи с ожидаемым защищённым действием и проверенной установленной копией.
-4. Новая версия создаётся сразу с ограниченным ACL под `%ProgramFiles%\RobloxCDNAutoFix\versions\<GUID>`. До первого копирования пользовательской записи туда нет.
-5. Копируются только три runtime-скрипта. Исходный файл открыт без разрешения параллельной записи; файл назначения создаётся через CreateNew. Проверяются синтаксис, ACL и SHA-256.
-6. После успешной проверки создаётся/обновляется задача. CMD, VBS, тесты, README, старые backups и сам установщик в runtime не копируются.
-7. Наблюдатель запускается; установщик проверяет, что он остался Running. При ошибке восстанавливается предыдущая проверенная задача. Старая небезопасная задача из пользовательской папки не восстанавливается.
-8. Сохраняются текущая и предыдущая версии. Более старые версии удаляются только в проверенных границах установки.
-
-Используются две файловые блокировки: для установки/удаления и для изменения hosts. Если исправление ещё работает, установщик не меняет hosts параллельно с ним.
-
-Хеши проверяются при установке, запуске наблюдателя и перед очередной проверкой/ремонтом. Манифест защищён тем же ACL. SHA-256 не является цифровой подписью: **главная граница безопасности — ACL, а не самопроверка уже исполняемого скрипта**.
-
-## 4. Права ACL
-
-Каталоги программы, данных и backups создаются со следующим дескриптором:
-
-```text
-O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)
-```
-
-| Субъект | Права |
-|---|---|
-| SYSTEM — S-1-5-18 | Full Control |
-| Administrators — S-1-5-32-544 | Full Control |
-| Users — S-1-5-32-545 | Read & Execute, без записи, удаления, смены владельца или ACL |
-
-Владелец каталогов — Administrators. Наследование внешнего ACL отключено; безопасные правила наследуются файлами и дочерними каталогами. Дополнительно проверяются права родителей на удаление/подмену каталогов. ProgramData может разрешать создание других каталогов: это не даёт права заменить существующий защищённый каталог AutoFix.
-
-Для задачи:
-
-```text
-O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)
-```
-
-SYSTEM и Administrators управляют задачей; Users могут читать, но не менять её. ACL задаётся через [официальный Task Scheduler API SetSecurityDescriptor](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/nf-taskschd-iregisteredtask-setsecuritydescriptor), без запуска shell-команд.
-
-Если ACL, владелец или путь не проходят проверку, операция завершается ошибкой. Установщик не выдаёт Everyone/Users Full Control и не отключает Windows-защиту.
-
-## 5. Scheduled Task и нагрузка
-
-```text
-Windows startup / Start-ScheduledTask
-  → %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe
-  → "%ProgramFiles%\RobloxCDNAutoFix\versions\<GUID>\Roblox-CDN-Monitor.ps1" -Watch
-  → WMI process-start event: RobloxPlayerBeta.exe
-  → CDN check
-  → protected Roblox-CDN-AutoFix.ps1 -Quiet, only after two failures
-```
-
-Имя: `Roblox CDN AutoFix`, корневая папка Планировщика. Учётная запись SYSTEM, ServiceAccount, Highest. Права нужны для автоматической записи системного hosts и наблюдения за запусками игры во всех пользовательских сеансах; пароль пользователя не хранится.
-
-Используются New-ScheduledTaskAction/Trigger/Principal/SettingsSet и Register-ScheduledTask. Аргументы содержат фиксированные ключи и quoted абсолютный путь; каталог не зависит от cwd или расположения репозитория. Используются NoProfile и NonInteractive; ExecutionPolicy Bypass только для процесса, поскольку неподписанные локальные скрипты иначе могут блокироваться обычной Restricted-политикой. Доменные политики не обходятся.
-
-Постоянно работает один ожидающий PowerShell-процесс с низким приоритетом. Проверок каждые пять минут нет. HTTPS-запросов в ожидании события нет. Через три секунды повторяется только неудачная проверка. Ремонт ограничен cooldown 30 минут. События, накопившиеся во время проверки, объединяются. curl имеет таймауты; количество DNS-кандидатов ограничено 16 на источник. SYSTEM-ремонт работает последовательно, без массового параллельного запуска процессов.
-
-Нагрузка на память не нулевая. Если Roblox уже запущен при установке, его нужно перезапустить. Один лишь ответ HTTPS, в том числе 403/404/5xx, подтверждает связность и TLS, но не загрузку конкретного игрового ресурса.
-
-## 6. Сеть и конфиденциальность
-
-| Назначение | Адрес |
-|---|---|
-| Проверка CDN, включая --resolve для кандидатов | `https://tr.rbxcdn.com/`, TCP 443 |
-| Google DoH, запрос A для tr.rbxcdn.com | `https://dns.google/resolve`, bootstrap `8.8.8.8:443` |
-| Cloudflare DoH, тот же запрос | `https://cloudflare-dns.com/dns-query`, bootstrap `1.1.1.1:443` |
-| Исходное разрешение имени | Настроенный в Windows DNS, только имя tr.rbxcdn.com |
-
-Есть встроенный запасной список CDN IPv4; адреса не используются без проверки TLS для tr.rbxcdn.com. Неканонические IPv4, loopback, основные частные/локальные диапазоны и multicast отклоняются. curl не читает пользовательский curlrc, не следует redirect и не использует proxy; сертификаты не отключаются.
-
-Нет серверов разработчика, загрузки/исполнения сетевого кода, телеметрии, чтения cookies, токенов или данных аккаунта. Не отправляются username, hostname, Windows ID или содержимое файлов. Как при любом HTTPS/DNS-подключении, получатель видит адрес источника и запрос. Windows может самостоятельно выполнять DNS/TLS-проверки по своей политике — проект не отключает проверку отзыва сертификатов и не управляет сетевой активностью ОС.
-
-Ссылки и badges README загружаются браузером GitHub, а не исполняемыми скриптами.
-
-Журналы содержат диагностические сообщения, CDN-кандидаты и локальные пути ошибок, не содержимое hosts. Каждый журнал имеет один архив .1 после примерно 1 МиБ. Backups содержат локальные hosts-записи; не публикуй их. `.gitignore` исключает backups и логи, но не удаляет файлы, уже попавшие в историю Git.
-
-## 7. Hosts, backups и оставшиеся ограничения
-
-- До изменения сохраняется полный побайтовый снимок в `%ProgramData%\RobloxCDNAutoFix-Secure\backups\` под уникальным именем. Запись завершается Flush, проверяется SHA-256, сохраняется sidecar .sha256. Существующие копии не перезаписываются.
-- Управляется только свой блок BEGIN/END. Распознаётся также точная прежняя метка AutoFix с датой и единственной записью домена. Незнакомое содержимое блока или повреждённые границы приводят к отказу.
-- Чужая запись целевого домена, в том числе IPv6/alias, не удаляется и не дублируется. Автоматическое исправление такого конфликта отменяется.
-- Временный файл создаётся не в TEMP, а рядом с hosts в защищённом системном каталоге. Сохраняется ACL, перед атомарной заменой проверяется исходный хеш.
-- После записи выполняется ipconfig /flushdns и проверяется реальный IP подключения. При провале возвращаются исходные байты и снова очищается DNS-кэш.
-- Если hosts изменён другой программой, откат отказывается затирать постороннее изменение. Снимок остаётся для ручного восстановления.
-
-Известные ограничения:
-
-1. До подтверждения UAC администратор должен доверять скачанному исходному репозиторию. Неподписанный installer не доказывает подлинность поставщика. Хеширование при установке не защищает от заранее подменённого дистрибутива.
-2. Администратор/SYSTEM может изменить код, ACL или манифест. Это не защищает от уже привилегированного вредоносного ПО.
-3. Между сравнением хеша hosts и File.Replace остаётся узкое окно для другой привилегированной программы. Собственные операции сериализованы; изменение hosts другими администраторами одновременно с ремонтом следует исключить.
-4. При выключении питания или аварии процесса после замены автоматический откат не гарантирован; защищённый backup сохраняется.
-5. Старые пользовательские backups не используются автоматически. Если прежняя версия уже удалила чужую запись, восстановление требует ручного сравнения.
-6. Резервные копии сохраняются без автоматического удаления, чтобы не потерять исходное состояние. Их объём администратор контролирует вручную.
-7. Имя процесса — сигнал запуска, а не доказательство подлинности Roblox. Другой пользователь может вызвать проверку процессом с таким именем, но не передать произвольную команду или путь.
-8. Windows ARM/32-bit, корпоративные ACL/GPO и сетевые ошибки всех провайдеров отдельно не испытаны. PowerShell 7 не заявлен как поддерживаемая среда; лаунчеры выбирают Windows PowerShell 5.1.
-
-## 8. Проверка установки
-
-В обычном PowerShell из папки репозитория:
+From the v2 project root:
 
 ```powershell
-.\install-monitor.cmd
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-InstalledSecurity.ps1
+dotnet run --project tests/CoreTests/CoreTests.csproj
+powershell -NoProfile -File tests/Test-Local.ps1
+powershell -NoProfile -File tests/Test-Lifecycle.ps1
 ```
 
-Повтори install-monitor.cmd: должна остаться одна задача, смениться GUID версии, а monitoring — вернуться в Running. Для просмотра из повышенного PowerShell:
+The lifecycle test requests UAC, removes/reinstalls **v2 only**, tests failed update recovery, checks the task principal/action, measures idle CPU and executes native atomic hosts operations against protected fixture files. It leaves v2 monitoring installed. It never intentionally changes the actual system hosts or terminates Roblox.
+
+Then run **without elevation**:
 
 ```powershell
-Get-ScheduledTask -TaskName 'Roblox CDN AutoFix' |
-    Select-Object State, Principal, Actions, Triggers
-Get-Content "$env:ProgramData\RobloxCDNAutoFix-Secure\RobloxCDNMonitor.log" -Encoding UTF8 -Tail 10
+powershell -NoProfile -File tests/Test-InstalledSecurity.ps1
 ```
 
-Actions должны содержать только системный powershell.exe и защищённый абсолютный путь с пробелами в кавычках. Перемещение исходной папки не должно влиять на задачу. Для реального функционального теста перезапусти Roblox и проверь поведение CDN; искусственно ломать DNS или hosts на рабочем ПК не требуется.
+Expected: **Access Denied** for write-open on every installed `.ps1`, native EXE, JSON and manifest; creation denied in protected directories; task ACL modification denied. The test opens existing files for write but writes no bytes, and checks their hashes unchanged.
 
-## 9. Проверка удаления и регрессий
+Optional `tests/Test-MonitorEvent.ps1` installs a temporary diagnosis-only process filter, starts a harmless copied Windows `where.exe` under a test name without a window, waits for SYSTEM diagnosis and restores normal monitor configuration. It does not enable repair during that event. Do not run lifecycle/event tests while relying on a customized monitor configuration; they replace its settings.
 
-`uninstall-monitor.cmd` удаляет задачу и установленный код. Повторный запуск также успешен. Исходный репозиторий, backups, логи и текущее исправление hosts остаются. `reset-autofix.cmd` дополнительно убирает собственный блок hosts и cooldown, но сохраняет резервные копии.
+Uninstall:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Local.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Lifecycle.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-ConsoleSettings.ps1
+.\release\windows-x64.exe monitor remove
+.\release\windows-x64.exe monitor remove
 ```
 
-Первый тест работает с фиктивным hosts внутри tests и не изменяет систему. Второй запрашивает UAC, дважды удаляет мониторинг, устанавливает его, обновляет, проверяет отказ установки при отсутствующих runtime-файлах и возврат к предыдущей защищённой версии. В конце оставляет мониторинг установленным. Тест проверяет хеш настоящего hosts до/после; не запускай Roblox во время такого теста.
+Both calls must succeed; the task/runtime disappear, repository and backups remain, hosts is unchanged. `--restore` removes only owned mappings; it is deliberately tested through fake/native fixture backends rather than deleting a user's active v1 fix during development.
 
-Отчёт интеграционного теста: `%ProgramData%\RobloxCDNAutoFix-Secure\Security-test-results.txt`.
+## Residual limitations / Ограничения
 
-## 10. Сценарий атаки обычного пользователя
+1. Forced termination/power loss cannot execute `finally`; a pending snapshot is recovered on the next mutating run. `--diagnose` and `--dry-run` intentionally do not repair pending storage. If hosts was edited externally, recovery refuses to overwrite it; inspect the protected backup/journal manually.
+2. Windows does not expose a file-system compare-and-swap for hosts. Hash checks detect observed conflicts, but another privileged editor can race between check and replace. Ordinary users cannot write hosts. Avoid simultaneously running v1/v2 or other hosts editors.
+3. Read-only protected data includes hosts backups; local Users can read them, as with standard hosts. They are never uploaded. Operators needing stricter local confidentiality may choose an administrator-only ACL, but must retest diagnostics and installation.
+4. TLS trusts the Windows trust store. A compromised trusted root or privileged administrator is outside this model. CDN fingerprinting is a conservative availability signal, not proof every asset is retrievable.
+5. Restart requires an accessible original user token, unchanged PID/start time/path and a valid Roblox Corporation signature. Protected/MS Store/updated or differently signed installations may require manual restart. Specific game sessions are not restored. Actual interactive Player restart needs on-device validation; unit tests use a fake backend and never kill the real game.
+6. IPv4 only for discovery/repair. Proxy-only networks and resolver filtering may prevent discovery. CloudFront cache may be stale and is marked as such; TLS validation is still required.
+7. ARM64 build is provided; x64-host testing does not replace native ARM64 runtime validation. The project uses .NET 8 and the installed Windows security stack; rebuild with maintained SDK/runtime patches before publication.
 
-Запусти **без повышения прав**:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-InstalledSecurity.ps1
-```
-
-Тест:
-- отвергает повышенный токен;
-- проверяет ACL и SHA-256 каждой установленной версии;
-- пытается открыть все runtime-файлы и манифест с правом Write, без перезаписи содержимого;
-- пробует создать файл в каталогах установки и данных;
-- пробует повторно применить текущий дескриптор задачи, что требует права изменения ACL.
-
-Ожидается **Access Denied**, в том числе при попытке менять разрешения задачи. Проверка ACL также исключает права Delete/DeleteChild/WriteDac/WriteOwner, необходимые для подмены через удаление или смену прав. Исходная папка остаётся изменяемой пользователем, но задача её больше не читает.
-
-## 11. Консольный релиз Windows
-
-Добавлен `console/Program.cs`, который даёт единое меню и CLI для проверки CDN, ремонта, reset, настроек и управления мониторингом. Windows-клиент содержит PowerShell-скрипты как embedded resources: перед запуском exe создаёт staging-папку только в `%ProgramFiles%`, задаёт ACL для SYSTEM/Administrators, проверяет владельца, права и reparse points, запускает абсолютный системный PowerShell и удаляет staging после операции.
-
-Поддерживается только Windows x64. Настройки наблюдателя ограничены cooldown, именами процессов и флагом автоматического ремонта. Пользовательские параметры EXE копируются в защищённую конфигурацию только при установке / обновлении; задача SYSTEM не читает пользовательский JSON.
-
-В `release` публикуется один `windows-x64.exe`, без ZIP и зависимых файлов. Дочерний PowerShell запускается без отдельного окна, а ошибки передаются в основную консоль.
-
-## Выполненные проверки
-
-- PowerShell 5.1: синтаксическая проверка скриптов.
-- 55 локальных регрессионных проверок пройдены: синтаксис PowerShell, WMI-фильтр списка процессов, обработка hosts, IP, rollback (включая искусственную ошибку после замены), уникальность backup, атомарная замена, конфликт изменений, ротация, блокировка, целостность и границы удаления.
-- Меню настроек проверено с временным вводом: AutoRepair, cooldown, имена процессов и тема сохраняются; пользовательский файл настроек после теста восстановлен байт-в-байт.
-- Интеграционный тест пройден: удаление дважды, новая установка, повторная установка, отсутствие дубликатов, прямое защищённое действие, SYSTEM/Highest, возврат к рабочей версии после ошибки копирования.
-- Использован путь тестового источника с пробелом, & и !.
-- Обычный неповышенный токен вне песочницы: отказ записи во все runtime-файлы и manifest, отказ создания файлов в защищённых каталогах, отказ изменения ACL задачи.
-- Настоящий hosts в интеграционном тесте не изменился. Отказы сети и реальное изменение системного hosts намеренно не провоцировались; транзакции проверены на фикстурах.
-- Замер одного наблюдателя в ожидании: за 10 секунд прирост CPU time 0,000 с, private memory около 87 МиБ. Это отдельное измерение, не гарантия постоянной нулевой нагрузки.
-
-## Проверка опасных конструкций
-
-Вывод повышенного Windows-клиента передаётся в основную консоль через локальный однонаправленный named pipe со случайным именем. ACL разрешает доступ текущему пользователю и Administrators; получатель проверяет PID подключившегося процесса. Клиент использует Anonymous impersonation level, не принимает команды через канал и не пишет результаты в пользовательские временные файлы. `tests/Test-ConsoleOutput.ps1` проверяет получение результата статуса через UAC, UTF-8 и возврат в меню; опция `-Install` дополнительно обновляет мониторинг с текущими пользовательскими настройками.
-
-В runtime нет Invoke-Expression/iex, DownloadString/DownloadFile/WebClient, EncodedCommand, Base64-исполнения, cmd /c или загружаемого сетевого кода. Start-Process оставлен только для явного UAC-повышения ручных операций. Тест интеграции повышается тем же способом.
-
-Нативные exe указаны абсолютно. Системные модули импортируются из PSHOME; нет поиска модулей в профиле пользователя. Рабочий каталог перед системными вызовами — System32, а каталог задачи — защищённая версия; это сокращает риски PATH/DLL hijacking. Результат не является аудитом внутренних DLL Windows.
-
-Удаление выполняется через проверенные LiteralPath и .NET, без wildcard-рекурсивного удаления пользовательских папок. Удаление дерева разрешено только для точного InstallRoot или непосредственной версии; каждый вложенный элемент проверяется на ACL и reparse point.
+Report security issues privately to the maintainer (Discord `foreverfame`). Do not post cookies, tokens, original Player command lines or full private hosts contents in public issues.

@@ -1,23 +1,13 @@
 @echo off
-setlocal DisableDelayedExpansion
-set "SCRIPT=%~dp0Manage-AutoFixTask.ps1"
-if not exist "%SCRIPT%" (
-  echo Manage-AutoFixTask.ps1 was not found next to this launcher.
+setlocal
+set "app=%~dp0release\windows-x64.exe"
+if not exist "%app%" set "app=%~dp0release\windows-arm64.exe"
+if not exist "%app%" (
+  echo Build version2 with build-release.ps1 first, or download the standalone release.
   pause
   exit /b 1
 )
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" -Action Install
-set "RESULT=%errorlevel%"
-
-echo.
-if not "%RESULT%"=="0" goto install_failed
-
-echo Installation completed successfully.
-goto install_done
-
-:install_failed
-echo Installation failed with exit code %RESULT%.
-
-:install_done
+"%app%" monitor install
+set "result=%errorlevel%"
 pause
-endlocal & exit /b %RESULT%
+exit /b %result%

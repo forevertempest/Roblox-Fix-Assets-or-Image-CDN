@@ -19,7 +19,13 @@ function Check([bool]$Condition, [string]$Name) {
     $reportLines.Add("PASS: $Name")
 }
 function Run-Manager([string]$Mode, [string]$Source = $root, [int]$Expected = 0) {
-    & $script:PowerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $Source 'Manage-AutoFixTask.ps1') -Action $Mode | Out-Host
+    if ($Source -eq $root) {
+        $argument = if ($Mode -eq 'Uninstall') { 'remove' } else { 'install' }
+        & (Join-Path $root 'release\windows-x64.exe') monitor $argument | Out-Host
+    }
+    else {
+        & $script:PowerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $Source 'Manage-AutoFixTask.ps1') -Action $Mode | Out-Host
+    }
     Check ($LASTEXITCODE -eq $Expected) "$Mode exit code $Expected"
 }
 $exitCode = 1
@@ -50,6 +56,11 @@ try {
     $current = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     Check ($current.Actions[0].WorkingDirectory -ne $firstRelease) 'repeat install switches to new verified release'
     Check (@(Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $script:TaskName).Count -eq 1) 'no duplicate tasks'
+    $heldRepair = Enter-AutoFixLock
+    try { Run-Manager -Mode 'Uninstall' -Expected 1 }
+    finally { $heldRepair.Dispose() }
+    Check ((Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\').State -eq 'Running') 'busy repair prevents uninstall without stopping watcher'
+    $settingsHash = (Get-FileHash -LiteralPath $script:MonitorSettingsPath).Hash
 
     $fixture = Join-Path $PSScriptRoot ('.fixtures_' + [Guid]::NewGuid().ToString('N') + ' space & bang!')
     [IO.Directory]::CreateDirectory($fixture) | Out-Null
@@ -60,6 +71,7 @@ try {
     $afterFailure = Get-ScheduledTask -TaskName $script:TaskName -TaskPath '\'
     Check ($afterFailure.Actions[0].WorkingDirectory -eq $current.Actions[0].WorkingDirectory) 'failed copy restores previous safe task'
     Check ($afterFailure.State -eq 'Running') 'previous watcher restarted after failed install'
+    Check ((Get-FileHash -LiteralPath $script:MonitorSettingsPath).Hash -eq $settingsHash) 'failed update restores previous monitor settings'
     $watchers = @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
         $_.CommandLine -and $_.CommandLine.Contains($current.Actions[0].WorkingDirectory) -and $_.CommandLine -like '* -Watch*'
     })
@@ -74,6 +86,9 @@ try {
     $reportLines.Add(('INFO: idle sample 10s; CPU seconds={0:F3}; private memory MiB={1:F1}' -f $cpuDelta, ($watcher.PrivateMemorySize64 / 1MB)))
     $watcher.Dispose()
     Check ((Get-FileHash -LiteralPath $script:HostsPath).Hash -eq $hostHash) 'system hosts unchanged'
+    $nativeTests = Join-Path $root 'tests\CoreTests\bin\Debug\net8.0-windows\win-x64\CoreTests.exe'
+    & $nativeTests --files | ForEach-Object { $reportLines.Add([string]$_) }
+    Check ($LASTEXITCODE -eq 0) 'native hosts fixture tests'
     $exitCode = 0
 }
 catch { $reportLines.Add($_.Exception.Message) }

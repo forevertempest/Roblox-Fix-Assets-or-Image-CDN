@@ -1,99 +1,73 @@
-﻿# Проверяет CDN по событию запуска игры или по ручному запросу.
-[CmdletBinding()]
-param([switch]$Watch, [ValidateRange(1, 1440)][int]$CooldownMinutes = 30)
-
+﻿[CmdletBinding()]
+param([switch]$Watch)
 $ErrorActionPreference = 'Stop'
 $env:PSModulePath = Join-Path $PSHOME 'Modules'
 $env:PATH = [Environment]::SystemDirectory
 Set-Location -LiteralPath ([Environment]::SystemDirectory)
 . (Join-Path $PSScriptRoot 'AutoFix.Common.ps1')
-$script:AutoRepair = $true
-
-function Test-CdnAvailable {
-    if (-not (Test-Path -LiteralPath $script:CurlExe)) { throw 'Системный curl.exe не найден.' }
-    $curlArgs = @('--disable', '--proto', '=https', '--silent', '--output', 'NUL',
-        '--write-out', '%{http_code}', '--noproxy', '*', '--ipv4',
-        '--connect-timeout', '3', '--max-time', '6', 'https://tr.rbxcdn.com/')
-    $output = & $script:CurlExe @curlArgs
-    return ($LASTEXITCODE -eq 0 -and ($output -join '').Trim() -match '^[1-5][0-9]{2}$')
+if (-not $Watch) { throw 'Для ручной проверки используй --diagnose или --repair.' }
+Assert-Release $PSScriptRoot
+Initialize-AutoFixData
+$bundleCache = Join-Path $script:DataRoot 'dotnet-bundle'
+New-ProtectedDirectory $bundleCache
+$env:DOTNET_BUNDLE_EXTRACT_BASE_DIR = $bundleCache
+$settings = Read-MonitorSettings
+Import-Module (Join-Path $PSHOME 'Modules\CimCmdlets\CimCmdlets.psd1')
+$source = 'RobloxCDNAutoFixV2.ProcessStart'
+$query = New-RobloxProcessStartQuery $settings.ProcessNames
+Register-CimIndicationEvent -Namespace root/cimv2 -Query $query -SourceIdentifier $source | Out-Null
+$lastRepair = [DateTime]::MinValue
+$statePath = Join-Path $script:DataRoot 'last-monitor-repair.txt'
+if (Test-Path -LiteralPath $statePath) {
+    Assert-ProtectedPath $statePath
+    $saved = [DateTime]::MinValue
+    if ([DateTime]::TryParse([IO.File]::ReadAllText($statePath), [ref]$saved) -and $saved.ToUniversalTime() -le [DateTime]::UtcNow) { $lastRepair = $saved.ToUniversalTime() }
 }
-
-function Invoke-CdnCheck {
-    if (Test-CdnAvailable) { Write-Host 'CDN доступен.'; return 0 }
-    Start-Sleep -Seconds 3
-    if (Test-CdnAvailable) { Write-Host 'CDN доступен после повторной проверки.'; return 0 }
-    if (-not (Test-IsAdministrator)) {
-        Write-Host 'CDN недоступен. Запусти run-fix.cmd или установи мониторинг.'
-        return 1
-    }
-    if (-not $script:AutoRepair) {
-        Write-RotatingLog 'RobloxCDNMonitor.log' 'CDN недоступен; автоматическое исправление отключено в настройках.'
-        Write-Host 'CDN недоступен; автоматическое исправление отключено в настройках.'
-        return 3
-    }
-    $operationLock = Enter-AutoFixLock
+function Invoke-NativeCheck {
+    param([string]$Mode)
+    Assert-Release $PSScriptRoot
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = Join-Path $PSScriptRoot 'AutoFixV2.exe'
+    $start.Arguments = $Mode + ' --system-settings'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $start.WorkingDirectory = $PSScriptRoot
+    $process = [Diagnostics.Process]::Start($start)
     try {
-        $statePath = Join-Path $script:DataRoot 'last-monitor-repair.txt'
-        Assert-NoReparsePoint $statePath
-        if (Test-Path -LiteralPath $statePath) {
-            Assert-ProtectedPath $statePath
-            $lastRepair = [DateTime]::MinValue
-            if ([DateTime]::TryParse([IO.File]::ReadAllText($statePath), [ref]$lastRepair) -and
-                ([DateTime]::UtcNow - $lastRepair.ToUniversalTime()).TotalMinutes -lt $CooldownMinutes) {
-                Write-Host 'CDN недоступен; повторное исправление отложено на время cooldown.'
-                return 2
-            }
+        $errors = $process.StandardError.ReadToEndAsync()
+        while ($null -ne ($line = $process.StandardOutput.ReadLine())) {
+            Write-RotatingLog 'RobloxCDNMonitor.log' $line
         }
-        [IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        Write-RotatingLog 'RobloxCDNMonitor.log' 'Две ошибки HTTPS; запускается исправление.'
+        $process.WaitForExit()
+        if ($errors.GetAwaiter().GetResult()) { Write-RotatingLog 'RobloxCDNMonitor.log' 'Проверка завершилась с ошибкой.' }
+        return $process.ExitCode
     }
-    finally { $operationLock.Dispose() }
-    if ($Watch) { Assert-Release $PSScriptRoot }
-    $fixPath = Join-Path $PSScriptRoot 'Roblox-CDN-AutoFix.ps1'
-    & $script:PowerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $fixPath -Quiet | Out-Host
-    $result = $LASTEXITCODE
-    Write-RotatingLog 'RobloxCDNMonitor.log' ("Код завершения исправления: " + $result)
-    return $result
+    finally { $process.Dispose() }
 }
-
+Write-RotatingLog 'RobloxCDNMonitor.log' 'AutoFix v2 готов. Сеть проверяется только при запуске Roblox.'
 try {
-    if ($Watch) {
-        if (-not (Test-IsAdministrator)) { throw 'Наблюдатель должен запускаться установленной задачей.' }
-        Assert-Release $PSScriptRoot
-        Initialize-AutoFixData
-        $settings = Read-MonitorSettings
-        $CooldownMinutes = $settings.CooldownMinutes
-        $script:AutoRepair = $settings.AutoRepair
-        Import-Module (Join-Path $PSHOME 'Modules\CimCmdlets\CimCmdlets.psd1')
-        $query = New-RobloxProcessStartQuery $settings.ProcessNames
-        $source = 'RobloxCDNAutoFix.ProcessStart'
-        Register-CimIndicationEvent -Namespace root/cimv2 -Query $query -SourceIdentifier $source | Out-Null
-        Write-RotatingLog 'RobloxCDNMonitor.log' ('Наблюдатель готов. Ожидание запуска: ' + ($settings.ProcessNames -join ', '))
+    while ($true) {
+        $event = Wait-Event -SourceIdentifier $source
+        Remove-Event -EventIdentifier $event.EventIdentifier
         try {
-            while ($true) {
-                $event = Wait-Event -SourceIdentifier $source
-                Remove-Event -EventIdentifier $event.EventIdentifier
-                Assert-Release $PSScriptRoot
-                try { Invoke-CdnCheck | Out-Null }
-                catch { Write-RotatingLog 'RobloxCDNMonitor.log' ('Проверка не завершена: ' + $_.Exception.Message) }
-                finally { Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue | Remove-Event }
+            if ((Invoke-NativeCheck '--diagnose') -ne 0 -and $settings.AutoRepair) {
+                if (([DateTime]::UtcNow - $lastRepair).TotalMinutes -ge $settings.CooldownMinutes) {
+                    $lastRepair = [DateTime]::UtcNow
+                    Assert-NoReparsePoint $statePath
+                    if (Test-Path -LiteralPath $statePath) { Assert-ProtectedPath $statePath }
+                    [IO.File]::WriteAllText($statePath, $lastRepair.ToString('o'))
+                    $result = Invoke-NativeCheck '--repair'
+                    Write-RotatingLog 'RobloxCDNMonitor.log' ('Repair exit code: ' + $result)
+                }
+                else { Write-RotatingLog 'RobloxCDNMonitor.log' 'Повторный ремонт отложен до окончания cooldown.' }
             }
         }
-        finally { Unregister-Event -SourceIdentifier $source }
-    }
-    else {
-        if (-not (Get-Process -Name RobloxPlayerBeta, RobloxPlayerLauncher -ErrorAction SilentlyContinue)) {
-            Write-Host 'Roblox не запущен. Проверка не требуется.'
-            exit 0
-        }
-        if (Test-IsAdministrator) { Initialize-AutoFixData }
-        exit (Invoke-CdnCheck)
+        catch { Write-RotatingLog 'RobloxCDNMonitor.log' ('Проверка не завершена: ' + $_.Exception.Message) }
+        finally { Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue | Remove-Event }
     }
 }
-catch {
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    if (Test-IsAdministrator) {
-        try { Write-RotatingLog 'RobloxCDNMonitor.log' $_.Exception.Message } catch { }
-    }
-    exit 1
-}
+finally { Unregister-Event -SourceIdentifier $source }

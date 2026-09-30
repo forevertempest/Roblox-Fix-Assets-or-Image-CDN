@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "targets": ["tr.rbxcdn.com"],
+  "resolvers": ["cloudflare", "google", "quad9"],
+  "maxCandidates": 24,
+  "concurrency": 4,
+  "finalists": 5,
+  "samples": 3,
+  "maxApplyAttempts": 3,
+  "dnsTimeoutSeconds": 3,
+  "connectTimeoutSeconds": 3,
+  "tlsTimeoutSeconds": 5,
+  "httpTimeoutSeconds": 5,
+  "operationTimeoutSeconds": 150,
+  "cacheTtlHours": 24,
+  "awsCacheTtlHours": 24,
+  "restartPlayer": true,
+  "weights": {
+    "https": 100,
+    "cloudFront": 4,
+    "additionalDnsSource": 2,
+    "cached": 2,
+    "latencyPer100Ms": 10,
+    "jitterPer100Ms": 3
+  }
+}

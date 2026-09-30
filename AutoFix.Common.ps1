@@ -3,11 +3,11 @@ $script:SystemDir = [Environment]::SystemDirectory
 $script:PowerShellExe = Join-Path $script:SystemDir 'WindowsPowerShell\v1.0\powershell.exe'
 $script:CurlExe = Join-Path $script:SystemDir 'curl.exe'
 $script:IpconfigExe = Join-Path $script:SystemDir 'ipconfig.exe'
-$script:InstallRoot = Join-Path ([Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion', 'ProgramFilesDir', $null)) 'RobloxCDNAutoFix'
-$script:DataRoot = Join-Path ([Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders', 'Common AppData', $null)) 'RobloxCDNAutoFix-Secure'
+$script:InstallRoot = Join-Path ([Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion', 'ProgramFilesDir', $null)) 'RobloxCDNAutoFixV2'
+$script:DataRoot = Join-Path ([Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders', 'Common AppData', $null)) 'RobloxCDNAutoFixV2-Secure'
 $script:HostsPath = Join-Path $script:SystemDir 'drivers\etc\hosts'
-$script:RuntimeFiles = @('Roblox-CDN-Monitor.ps1', 'Roblox-CDN-AutoFix.ps1', 'AutoFix.Common.ps1')
-$script:TaskName = 'Roblox CDN AutoFix'
+$script:RuntimeFiles = @('Roblox-CDN-Monitor.ps1', 'Roblox-CDN-AutoFix.ps1', 'AutoFix.Common.ps1', 'AutoFixV2.exe', 'autofix-config.json')
+$script:TaskName = 'Roblox CDN AutoFix v2'
 $script:MonitorSettingsPath = Join-Path $script:DataRoot 'monitor-settings.json'
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
     throw 'Запусти 64-разрядный Windows PowerShell через CMD-файл проекта.'

@@ -1,12 +1,13 @@
 @echo off
-setlocal DisableDelayedExpansion
-set "SCRIPT=%~dp0Roblox-CDN-AutoFix.ps1"
-if not exist "%SCRIPT%" (
-  echo Roblox-CDN-AutoFix.ps1 was not found next to this launcher.
+setlocal
+set "app=%~dp0release\windows-x64.exe"
+if not exist "%app%" set "app=%~dp0release\windows-arm64.exe"
+if not exist "%app%" (
+  echo Build version2 with build-release.ps1 first, or download the standalone release.
   pause
   exit /b 1
 )
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%"
-set "RESULT=%errorlevel%"
+"%app%" --repair
+set "result=%errorlevel%"
 pause
-endlocal & exit /b %RESULT%
+exit /b %result%
